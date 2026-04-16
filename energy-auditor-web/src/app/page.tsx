@@ -1,542 +1,360 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { generateAuditData, RATE_PER_KWH, type ApplianceRecord } from "@/lib/data";
 
-// ─── tiny helpers ──────────────────────────────────────────
-const fmt  = (n: number, d = 2)  => n.toFixed(d);
-const inr  = (n: number)         => `₹${fmt(n)}`;
-const pct  = (val: number, max: number) => Math.min(100, (val / max) * 100);
+const fmt = (n: number, d = 2) => n.toFixed(d);
+const inr = (n: number) => `₹${fmt(n)}`;
+const pct = (v: number, max: number) => Math.min(100, (v / max) * 100);
 
-function barColor(pctVal: number): string {
-  if (pctVal > 75) return "linear-gradient(90deg,#ef4444,#f97316)";
-  if (pctVal > 45) return "linear-gradient(90deg,#f59e0b,#fbbf24)";
-  return "linear-gradient(90deg,#10b981,#34d399)";
+function useCounter(target: number, dur = 900) {
+  const [val, setVal] = useState(0);
+  const ran = useRef(false);
+  useEffect(() => {
+    if (ran.current) return;
+    ran.current = true;
+    const t0 = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min((now - t0) / dur, 1);
+      setVal(target * (1 - Math.pow(1 - p, 3)));
+      if (p < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, [target, dur]);
+  return val;
 }
-function rankClass(rank: number): string {
-  if (rank === 1) return "rank-1";
-  if (rank === 2) return "rank-2";
-  if (rank === 3) return "rank-3";
-  return "rank-n";
-}
 
-// ─── Sub-components ────────────────────────────────────────
+/* ═══ NAV ═══ */
+const TABS = [
+  { id: "overview",  label: "Dashboard" },
+  { id: "ranking",   label: "Energy Usage" },
+  { id: "recommend", label: "Audits" },
+  { id: "search",    label: "Search" },
+  { id: "daily",     label: "Analytics" },
+];
 
-function NavBar({ activeTab, setActiveTab }: {
-  activeTab: string;
-  setActiveTab: (t: string) => void;
+function Sidebar({ active, setActive, open, close }: {
+  active: string; setActive: (s: string) => void; open: boolean; close: () => void;
 }) {
-  const tabs = [
-    { id: "overview",  label: "Overview"       },
-    { id: "ranking",   label: "Rankings"       },
-    { id: "recommend", label: "Recommendations"},
-    { id: "search",    label: "Search"         },
-    { id: "daily",     label: "Daily Stats"    },
-  ];
   return (
-    <nav className="nav">
-      <div className="container nav-inner">
-        <div className="nav-logo">
-          <div className="nav-logo-icon">⚡</div>
-          <div>
-            <div className="nav-logo-text">EnergyAudit</div>
-            <div className="nav-logo-sub">Group 63 · Project 110</div>
-          </div>
+    <>
+      <div className={`overlay ${open ? "show" : ""}`} onClick={close}/>
+      <aside className={`sidebar ${open ? "open" : ""}`}>
+        <div className="sidebar-brand">
+          <div className="sidebar-brand-name">EnergyAudit</div>
+          <div className="sidebar-brand-sub">Operational View</div>
         </div>
-        <div className="nav-tabs">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              id={`nav-${t.id}`}
-              className={`btn btn-ghost ${activeTab === t.id ? "active" : ""}`}
-              onClick={() => setActiveTab(t.id)}
-            >
+        <nav className="sidebar-nav">
+          {TABS.map((t) => (
+            <button key={t.id} id={`nav-${t.id}`}
+              className={`nav-item ${active === t.id ? "active" : ""}`}
+              onClick={() => { setActive(t.id); close(); }}>
               {t.label}
             </button>
           ))}
-        </div>
+        </nav>
+        <div className="sidebar-bottom" />
+      </aside>
+    </>
+  );
+}
+
+/* ═══ STATS ═══ */
+function Stats({ data }: { data: ReturnType<typeof generateAuditData> }) {
+  const kwh = useCounter(data.totalMonthlyKwh);
+  const cost = useCounter(data.totalMonthlyCost);
+  const saving = useCounter(data.potentialSaving);
+  const eff = Math.round(100 - (data.replacementCandidates.length / data.appliances.length) * 100);
+
+  return (
+    <div className="stats-row">
+      <div className="stat-card anim-up d1">
+        <div className="stat-card-label">Total Consumption</div>
+        <div className="stat-card-value">{fmt(kwh, 1)} <span>kWh</span></div>
+        <div className="stat-card-sub">30-day period</div>
       </div>
-    </nav>
-  );
-}
-
-function Hero({ totalKwh, totalCost, rate }: {
-  totalKwh: number;
-  totalCost: number;
-  rate: number;
-}) {
-  return (
-    <section className="hero animate-fadeup">
-      <div className="hero-eyebrow">⚡ Smart Home Energy Management</div>
-      <h1>
-        Know where your <span className="gradient">electricity bill</span> goes
-      </h1>
-      <p>
-        Tracking 15 appliances over 30 days · Rate: {inr(rate)}/kWh ·
-        Monthly total: <strong style={{ color: "var(--text)" }}>{inr(totalCost)}</strong>
-      </p>
-    </section>
-  );
-}
-
-function StatsGrid({ data }: { data: ReturnType<typeof generateAuditData> }) {
-  const stats = [
-    {
-      label: "Total Monthly kWh",
-      value: fmt(data.totalMonthlyKwh),
-      sub: "30-day consumption",
-      color: "var(--blue)",
-    },
-    {
-      label: "Monthly Bill",
-      value: inr(data.totalMonthlyCost),
-      sub: `@ ₹${RATE_PER_KWH}/kWh`,
-      color: "var(--amber)",
-    },
-    {
-      label: "Appliances Flagged",
-      value: String(data.replacementCandidates.length),
-      sub: "above 75th percentile",
-      color: "var(--red)",
-    },
-    {
-      label: "Potential Saving",
-      value: inr(data.potentialSaving),
-      sub: "by replacing flagged units",
-      color: "var(--green)",
-    },
-    {
-      label: "Avg Daily Usage",
-      value: fmt(data.dailyAvg, 3),
-      sub: "kWh per appliance/day",
-      color: "var(--purple)",
-    },
-    {
-      label: "75th % Threshold",
-      value: fmt(data.percentileThreshold),
-      sub: "kWh/month cutoff",
-      color: "var(--blue)",
-    },
-  ];
-
-  return (
-    <div className="stats-grid">
-      {stats.map((s) => (
-        <div key={s.label} className="stat-chip">
-          <span className="label">{s.label}</span>
-          <span className="value" style={{ color: s.color }}>{s.value}</span>
-          <span className="sub">{s.sub}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function OverviewTable({ appliances, maxKwh }: {
-  appliances: ApplianceRecord[];
-  maxKwh: number;
-}) {
-  return (
-    <div className="card animate-fadeup">
-      <div className="section-header">
-        <div className="section-title">
-          <span>📋</span>
-          <h3>All Appliances</h3>
-        </div>
-        <span className="badge badge-blue">{appliances.length} appliances</span>
+      <div className="stat-card anim-up d2">
+        <div className="stat-card-label">Monthly Bill</div>
+        <div className="stat-card-value">{inr(cost)}</div>
+        <div className="stat-card-sub">@ {inr(RATE_PER_KWH)}/kWh</div>
       </div>
-      <div style={{ overflowX: "auto" }}>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Appliance</th>
-              <th>Wattage</th>
-              <th>30-Day kWh</th>
-              <th>Consumption</th>
-              <th className="right">Monthly Cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {appliances.map((a) => {
-              const p = pct(a.monthlyTotal, maxKwh);
-              return (
-                <tr key={a.info.id}>
-                  <td>
-                    <span style={{ marginRight: "0.5rem" }}>{a.info.icon}</span>
-                    <strong style={{ fontSize: "0.9rem" }}>{a.info.name}</strong>
-                  </td>
-                  <td className="mono" style={{ color: "var(--text-muted)" }}>
-                    {a.info.wattage}W
-                  </td>
-                  <td className="mono">{fmt(a.monthlyTotal)} kWh</td>
-                  <td style={{ width: "180px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
-                      <div className="progress-bar" style={{ flex: 1 }}>
-                        <div
-                          className="progress-fill"
-                          style={{ width: `${p}%`, background: barColor(p) }}
-                        />
-                      </div>
-                      <span style={{ fontSize: "0.72rem", color: "var(--text-faint)", width: "32px" }}>
-                        {Math.round(p)}%
-                      </span>
-                    </div>
-                  </td>
-                  <td className="right mono" style={{ fontWeight: 600 }}>
-                    {inr(a.monthlyCost)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={3}>
-                <span style={{ color: "var(--text-faint)", fontSize: "0.8rem" }}>
-                  TOTAL
-                </span>
-              </td>
-              <td />
-              <td className="right mono" style={{ fontWeight: 700, color: "var(--amber)" }}>
-                {inr(appliances.reduce((s, a) => s + a.monthlyCost, 0))}
-              </td>
-            </tr>
-          </tfoot>
-        </table>
+      <div className="stat-card anim-up d3">
+        <div className="stat-card-label">Flagged</div>
+        <div className="stat-card-value">{data.replacementCandidates.length} <span>of {data.appliances.length}</span></div>
+        <div className="stat-card-sub">Above 75th percentile</div>
+      </div>
+      <div className="stat-card anim-up d4">
+        <div className="stat-card-label">Efficiency Score</div>
+        <div className="stat-card-value">{eff} <span>/100</span></div>
+        <div className="stat-card-bar">
+          <div className="stat-card-bar-fill anim-fill" style={{ width: `${eff}%` }}/>
+        </div>
       </div>
     </div>
   );
 }
 
-function RankingView({ sorted }: { sorted: ApplianceRecord[] }) {
-  const maxKwh = sorted[0]?.monthlyTotal ?? 1;
+/* ═══ OVERVIEW ═══ */
+function OverviewTab({ data }: { data: ReturnType<typeof generateAuditData> }) {
+  const maxKwh = Math.max(...data.appliances.map((a) => a.monthlyTotal));
+  const top4 = data.sortedByConsumption.slice(0, 4);
+  const topName = data.sortedByConsumption[0].info.name;
+
   return (
-    <div className="card animate-fadeup">
-      <div className="section-header">
-        <div className="section-title">
-          <span>🏆</span>
-          <h3>Consumption Ranking</h3>
-        </div>
-        <span className="badge badge-purple">Bubble Sort — highest first</span>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-        {sorted.map((a) => {
-          const p = pct(a.monthlyTotal, maxKwh);
-          return (
-            <div
-              key={a.info.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "0.75rem",
-                padding: "0.75rem",
-                borderRadius: "var(--radius-sm)",
-                background: "var(--bg-card-2)",
-                border: "1px solid var(--border)",
-              }}
-            >
-              <div className={`rank-badge ${rankClass(a.rank!)}`}>{a.rank}</div>
-              <span style={{ fontSize: "1.2rem" }}>{a.info.icon}</span>
-              <span style={{ flex: 1, fontWeight: 500, fontSize: "0.9rem" }}>
-                {a.info.name}
-              </span>
-              <div className="progress-bar" style={{ width: "120px" }}>
-                <div
-                  className="progress-fill"
-                  style={{ width: `${p}%`, background: barColor(p) }}
-                />
-              </div>
-              <span className="mono" style={{ width: "70px", textAlign: "right", fontSize: "0.85rem" }}>
-                {fmt(a.monthlyTotal)} kWh
-              </span>
-              <span
-                className="mono"
-                style={{ width: "75px", textAlign: "right", fontWeight: 700, color: "var(--amber)", fontSize: "0.85rem" }}
-              >
-                {inr(a.monthlyCost)}
-              </span>
+    <>
+      <div className="content-row">
+        <div className="card anim-up d2">
+          <div className="card-head">
+            <div>
+              <h3>Top Consumers</h3>
+              <div className="card-head-sub">Appliance level breakdown for current period</div>
             </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function RecommendationsView({
-  candidates,
-  threshold,
-  potentialSaving,
-  all,
-}: {
-  candidates: ApplianceRecord[];
-  threshold: number;
-  potentialSaving: number;
-  all: ApplianceRecord[];
-}) {
-  const safe = all.filter((a) => !candidates.includes(a));
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }} className="animate-fadeup">
-      {/* summary banner */}
-      <div
-        style={{
-          padding: "1.25rem 1.5rem",
-          borderRadius: "var(--radius-lg)",
-          background: "linear-gradient(135deg,rgba(239,68,68,0.08),rgba(245,158,11,0.08))",
-          border: "1px solid rgba(239,68,68,0.2)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: "1rem",
-        }}
-      >
-        <div>
-          <h3 style={{ color: "var(--red)" }}>⚠ {candidates.length} appliances flagged</h3>
-          <p style={{ marginTop: "0.3rem", fontSize: "0.85rem" }}>
-            75th percentile threshold: <strong style={{ color: "var(--text)" }}>{fmt(threshold)} kWh/month</strong>
-          </p>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: "0.72rem", color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.07em" }}>
-            Potential monthly saving
+            <button className="card-link">View All</button>
           </div>
-          <div style={{ fontSize: "1.8rem", fontWeight: 800, color: "var(--green)" }}>
-            {inr(potentialSaving)}
-          </div>
-        </div>
-      </div>
-
-      {/* flagged */}
-      <div className="card">
-        <h3 style={{ marginBottom: "1rem", color: "var(--red)" }}>🔴 Replace These</h3>
-        {candidates.map((a) => {
-          const overage = (a.monthlyTotal - threshold) * RATE_PER_KWH;
-          return (
-            <div key={a.info.id} className="warning-card">
-              <div className="warning-icon">{a.info.icon}</div>
-              <div style={{ flex: 1 }}>
-                <div className="warning-name">{a.info.name}</div>
-                <div className="warning-detail">
-                  {fmt(a.monthlyTotal)} kWh/month · {inr(a.monthlyCost)}/month ·
-                  Overage cost: <strong style={{ color: "var(--red)" }}>{inr(overage)}/month</strong>
+          {top4.map((a, i) => (
+            <div key={a.info.id} className={`appliance-row anim-up d${i + 2}`}>
+              <div className="appliance-icon">{String(a.rank!).padStart(2, "0")}</div>
+              <div className="appliance-info">
+                <div className="appliance-name">{a.info.name}</div>
+                <div className="appliance-bar-track">
+                  <div className="appliance-bar-fill anim-fill" style={{ width: `${pct(a.monthlyTotal, maxKwh)}%`, animationDelay: `${i * 0.1 + 0.2}s` }}/>
                 </div>
               </div>
-              <span className="badge badge-red">High</span>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* safe */}
-      <div className="card">
-        <h3 style={{ marginBottom: "1rem", color: "var(--green)" }}>✅ Within Efficient Range</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: "0.6rem" }}>
-          {safe.map((a) => (
-            <div
-              key={a.info.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "0.6rem",
-                padding: "0.6rem 0.8rem",
-                borderRadius: "var(--radius-sm)",
-                background: "var(--green-dim)",
-                border: "1px solid rgba(16,185,129,0.15)",
-              }}
-            >
-              <span>{a.info.icon}</span>
-              <span style={{ fontSize: "0.85rem", fontWeight: 500 }}>{a.info.name}</span>
-              <span className="mono" style={{ marginLeft: "auto", fontSize: "0.78rem", color: "var(--green)" }}>
-                {fmt(a.monthlyTotal)} kWh
-              </span>
+              <div className="appliance-value">{fmt(a.monthlyTotal)} <span className="appliance-value-unit">kWh</span></div>
             </div>
           ))}
         </div>
+
+        <div className="anim-up d3">
+          <div className="side-card alert">
+            <h3>Anomaly Detected</h3>
+            <p>Unusual spike in consumption detected in <strong>{topName}</strong> during peak hours. Consider scheduling maintenance.</p>
+            <button className="side-card-btn">Investigate</button>
+          </div>
+          <div className="side-card">
+            <h3>Savings Potential</h3>
+            <p><strong>{data.replacementCandidates.length}</strong> appliances exceed the {fmt(data.percentileThreshold)} kWh threshold. Replacing them could save <strong>{inr(data.potentialSaving)}/month</strong>.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="card anim-up d4">
+        <div className="card-head">
+          <h3>All Appliances</h3>
+          <span className="badge">{data.appliances.length} Tracked</span>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table">
+            <thead><tr><th>Appliance</th><th>Wattage</th><th>30-Day kWh</th><th style={{width:140}}>Usage</th><th className="r">Monthly Cost</th></tr></thead>
+            <tbody>
+              {data.appliances.map((a) => {
+                const p = pct(a.monthlyTotal, maxKwh);
+                return (
+                  <tr key={a.info.id}>
+                    <td><strong style={{ fontWeight: 600, fontSize: "0.82rem" }}>{a.info.name}</strong></td>
+                    <td className="mono" style={{ color: "var(--gray-500)" }}>{a.info.wattage}W</td>
+                    <td className="mono">{fmt(a.monthlyTotal)}</td>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                        <div className="appliance-bar-track" style={{ flex: 1, maxWidth: 100 }}>
+                          <div className="appliance-bar-fill" style={{ width: `${p}%` }}/>
+                        </div>
+                        <span style={{ fontSize: "0.65rem", color: "var(--gray-500)", width: 24 }}>{Math.round(p)}%</span>
+                      </div>
+                    </td>
+                    <td className="r mono" style={{ fontWeight: 700 }}>{inr(a.monthlyCost)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot><tr>
+              <td colSpan={4}><strong style={{ fontSize: "0.72rem", color: "var(--gray-500)", letterSpacing: "0.08em" }}>TOTAL</strong></td>
+              <td className="r mono" style={{ fontWeight: 900 }}>{inr(data.totalMonthlyCost)}</td>
+            </tr></tfoot>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ═══ RANKING ═══ */
+function RankingTab({ sorted }: { sorted: ApplianceRecord[] }) {
+  const maxKwh = sorted[0]?.monthlyTotal ?? 1;
+  return (
+    <div className="card anim-up">
+      <div className="card-head">
+        <div><h3>Consumption Ranking</h3><div className="card-head-sub">Bubble Sort — highest to lowest</div></div>
+        <span className="badge badge-dark">Descending</span>
+      </div>
+      {sorted.map((a, i) => {
+        const p = pct(a.monthlyTotal, maxKwh);
+        const rc = a.rank === 1 ? "rank-1" : a.rank === 2 ? "rank-2" : a.rank === 3 ? "rank-3" : "rank-n";
+        return (
+          <div key={a.info.id} className={`rank-row anim-r d${Math.min(i + 1, 8)}`}>
+            <div className={`rank-num ${rc}`}>{a.rank}</div>
+            <span style={{ flex: 1, fontWeight: 600, fontSize: "0.85rem" }}>{a.info.name}</span>
+            <div className="appliance-bar-track" style={{ width: 100 }}>
+              <div className="appliance-bar-fill anim-fill" style={{ width: `${p}%`, animationDelay: `${i * 0.04}s` }}/>
+            </div>
+            <span className="mono" style={{ width: 70, textAlign: "right", fontSize: "0.8rem" }}>{fmt(a.monthlyTotal)}</span>
+            <span className="mono" style={{ width: 70, textAlign: "right", fontWeight: 700 }}>{inr(a.monthlyCost)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ═══ RECOMMENDATIONS ═══ */
+function RecommendTab({ data }: { data: ReturnType<typeof generateAuditData> }) {
+  const { replacementCandidates: cands, percentileThreshold: thr, potentialSaving, appliances } = data;
+  const safe = appliances.filter((a) => !cands.includes(a));
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+      <div className="card anim-up" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "1rem", borderLeft: "3px solid var(--black)" }}>
+        <div>
+          <h3>{cands.length} Appliances Flagged</h3>
+          <p style={{ fontSize: "0.82rem", marginTop: "0.15rem" }}>Threshold: {fmt(thr)} kWh/month (75th percentile)</p>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: "0.6rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--gray-500)" }}>Potential Savings</div>
+          <div style={{ fontSize: "1.8rem", fontWeight: 900, letterSpacing: "-0.04em" }}>{inr(potentialSaving)}</div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+        <div className="card anim-up d1">
+          <div className="card-head"><h3>Replace These</h3></div>
+          {cands.map((a, i) => {
+            const ov = (a.monthlyTotal - thr) * RATE_PER_KWH;
+            return (
+              <div key={a.info.id} className={`warn-item anim-r d${i + 1}`}>
+                <div className="appliance-icon" style={{ fontSize: "0.65rem" }}>{String(i + 1).padStart(2, "0")}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: "0.85rem" }}>{a.info.name}</div>
+                  <div style={{ fontSize: "0.72rem", color: "var(--gray-500)", marginTop: "0.05rem" }}>
+                    {fmt(a.monthlyTotal)} kWh — overage: {inr(ov)}/mo
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="card anim-up d2">
+          <div className="card-head"><h3>Efficient Range</h3></div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem" }}>
+            {safe.map((a, i) => (
+              <div key={a.info.id} className={`safe-item anim-up d${Math.min(i + 1, 8)}`}>
+                <span style={{ fontWeight: 600, fontSize: "0.78rem" }}>{a.info.name}</span>
+                <span className="mono" style={{ marginLeft: "auto", fontSize: "0.68rem", color: "var(--gray-500)" }}>{fmt(a.monthlyTotal)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-function SearchView({ appliances }: { appliances: ApplianceRecord[] }) {
-  const [query, setQuery] = useState("");
+/* ═══ SEARCH ═══ */
+function SearchTab({ appliances }: { appliances: ApplianceRecord[] }) {
+  const [q, setQ] = useState("");
   const results = useMemo(() => {
-    if (!query.trim()) return [];
-    const q = query.toLowerCase();
-    return appliances.filter(
-      (a) => a.info.name.toLowerCase().includes(q) || a.info.id.toString().includes(q)
-    );
-  }, [query, appliances]);
+    if (!q.trim()) return [];
+    return appliances.filter((a) => a.info.name.toLowerCase().includes(q.toLowerCase()));
+  }, [q, appliances]);
 
   return (
-    <div className="animate-fadeup" style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
-      <div className="card">
-        <h3 style={{ marginBottom: "0.75rem" }}>🔍 Linear Search by Name</h3>
-        <input
-          id="search-input"
-          className="input"
-          type="text"
-          placeholder='Type appliance name e.g. "Air Conditioner" or "fan"…'
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          autoComplete="off"
-        />
-        {query && (
-          <p style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}>
-            {results.length > 0
-              ? `${results.length} result${results.length > 1 ? "s" : ""} found`
-              : "No match found"}
-          </p>
-        )}
+    <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+      <div className="card anim-up">
+        <div className="card-head"><h3>Search Appliances</h3><span className="badge">Linear Search</span></div>
+        <div className="search-box">
+          <input id="search-input" type="text" placeholder='Type a name, e.g. "fan" or "air conditioner"' value={q} onChange={(e) => setQ(e.target.value)} autoComplete="off"/>
+        </div>
+        {q && <p style={{ marginTop: "0.4rem", fontSize: "0.78rem" }}>{results.length ? `${results.length} result${results.length > 1 ? "s" : ""}` : "No match"}</p>}
       </div>
-
-      {results.map((a) => (
-        <div key={a.info.id} className="card animate-fadeup">
-          <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1rem" }}>
-            <span style={{ fontSize: "2.5rem" }}>{a.info.icon}</span>
-            <div>
-              <h2>{a.info.name}</h2>
-              <p style={{ fontSize: "0.8rem" }}>Appliance ID: #{a.info.id}</p>
-            </div>
-          </div>
-          <div className="stats-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))" }}>
+      {results.map((a, i) => (
+        <div key={a.info.id} className={`card anim-up d${i + 1}`}>
+          <h2 style={{ marginBottom: "0.15rem" }}>{a.info.name}</h2>
+          <p style={{ fontSize: "0.78rem", marginBottom: "1rem" }}>ID #{a.info.id} — {a.info.wattage}W rated</p>
+          <div className="mini-stats" style={{ marginBottom: "1rem" }}>
             {[
-              { label: "Wattage",        value: `${a.info.wattage}W`, color: "var(--purple)" },
-              { label: "Monthly kWh",    value: `${fmt(a.monthlyTotal)} kWh`, color: "var(--blue)" },
-              { label: "Monthly Cost",   value: inr(a.monthlyCost),   color: "var(--amber)" },
-              { label: "Avg Daily kWh",  value: `${fmt(a.info.avgDailyKwh)} kWh`, color: "var(--green)" },
+              { l: "Wattage", v: `${a.info.wattage}W` },
+              { l: "Monthly kWh", v: fmt(a.monthlyTotal) },
+              { l: "Monthly Cost", v: inr(a.monthlyCost) },
+              { l: "Avg Daily", v: `${fmt(a.info.avgDailyKwh)} kWh` },
             ].map((s) => (
-              <div key={s.label} className="stat-chip">
-                <span className="label">{s.label}</span>
-                <span className="value" style={{ color: s.color, fontSize: "1.2rem" }}>{s.value}</span>
+              <div key={s.l} className="mini-stat">
+                <div className="mini-stat-label">{s.l}</div>
+                <div className="mini-stat-value">{s.v}</div>
               </div>
             ))}
           </div>
-          <div style={{ marginTop: "1rem" }}>
-            <h3 style={{ marginBottom: "0.5rem", fontSize: "0.85rem", color: "var(--text-muted)" }}>
-              30-Day Usage Breakdown
-            </h3>
-            <div className="day-bars">
-              {a.dailyKwh.map((v, i) => {
-                const maxDay = Math.max(...a.dailyKwh);
-                const h = pct(v, maxDay);
-                return (
-                  <div
-                    key={i}
-                    className="day-bar"
-                    style={{ height: `${h}%` }}
-                    title={`Day ${i + 1}: ${fmt(v, 4)} kWh`}
-                  />
-                );
-              })}
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.68rem", color: "var(--text-faint)", marginTop: "0.25rem" }}>
-              <span>Day 1</span><span>Day 30</span>
-            </div>
+          <div style={{ fontSize: "0.62rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--gray-500)", marginBottom: "0.4rem" }}>30-Day Usage</div>
+          <div className="bars">
+            {a.dailyKwh.map((v, d) => {
+              const mx = Math.max(...a.dailyKwh);
+              return <div key={d} className="bar-col anim-grow" style={{ height: `${pct(v, mx)}%`, opacity: 0.55, animationDelay: `${d * 0.018}s` }} title={`Day ${d + 1}: ${fmt(v, 4)} kWh`}/>;
+            })}
           </div>
+          <div className="bars-labels"><span>Day 1</span><span>Day 30</span></div>
         </div>
       ))}
-
-      {!query && (
-        <div className="card" style={{ textAlign: "center", padding: "3rem", color: "var(--text-faint)" }}>
-          <div style={{ fontSize: "3rem", marginBottom: "0.75rem" }}>🔍</div>
-          <p>Start typing to search across 15 appliances</p>
+      {!q && (
+        <div className="card" style={{ textAlign: "center", padding: "3rem 2rem" }}>
+          <p style={{ fontSize: "0.88rem", color: "var(--gray-400)" }}>Start typing to search across 15 appliances</p>
         </div>
       )}
     </div>
   );
 }
 
-function DailyStats({ data }: { data: ReturnType<typeof generateAuditData> }) {
+/* ═══ DAILY ═══ */
+function DailyTab({ data }: { data: ReturnType<typeof generateAuditData> }) {
   const max = Math.max(...data.dailyTotals);
   const min = Math.min(...data.dailyTotals);
-
   return (
-    <div className="animate-fadeup" style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
-      <div className="stats-grid">
+    <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+      <div className="mini-stats anim-up">
         {[
-          { label: "Daily Avg",    value: `${fmt(data.dailyAvg, 4)} kWh`, color: "var(--blue)"   },
-          { label: "Peak Day",     value: `Day ${data.peakDay}`,           color: "var(--red)"    },
-          { label: "Lowest Day",   value: `Day ${data.lowestDay}`,         color: "var(--green)"  },
-          { label: "Std Deviation",value: `${fmt(data.stdDev, 4)} kWh`,   color: "var(--purple)" },
+          { l: "Daily Avg", v: `${fmt(data.dailyAvg, 3)} kWh` },
+          { l: "Peak Day", v: `Day ${data.peakDay}` },
+          { l: "Lowest Day", v: `Day ${data.lowestDay}` },
+          { l: "Std Deviation", v: fmt(data.stdDev, 4) },
         ].map((s) => (
-          <div key={s.label} className="stat-chip">
-            <span className="label">{s.label}</span>
-            <span className="value" style={{ color: s.color, fontSize: "1.3rem" }}>{s.value}</span>
-          </div>
+          <div key={s.l} className="mini-stat"><div className="mini-stat-label">{s.l}</div><div className="mini-stat-value">{s.v}</div></div>
         ))}
       </div>
-
-      <div className="card">
-        <h3 style={{ marginBottom: "1rem" }}>📊 30-Day Household Consumption</h3>
-        <div className="day-bars" style={{ height: "140px" }}>
+      <div className="card anim-up d2">
+        <div className="card-head"><h3>30-Day Household Consumption</h3></div>
+        <div className="bars" style={{ height: 140 }}>
           {data.dailyTotals.map((v, i) => {
             const h = pct(v, max);
-            const isPeak  = v === max;
-            const isLow   = v === min;
-            return (
-              <div
-                key={i}
-                className={`day-bar ${isPeak ? "peak" : isLow ? "low" : ""}`}
-                style={{ height: `${h}%` }}
-                title={`Day ${i + 1}: ${fmt(v, 4)} kWh`}
-              />
-            );
+            const cls = v === max ? "peak" : v === min ? "low" : "";
+            return <div key={i} className={`bar-col ${cls} anim-grow`} style={{ height: `${h}%`, opacity: v === max || v === min ? 1 : 0.5, animationDelay: `${i * 0.02}s` }} title={`Day ${i + 1}: ${fmt(v, 4)} kWh`}/>;
           })}
         </div>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            fontSize: "0.68rem",
-            color: "var(--text-faint)",
-            marginTop: "0.3rem",
-          }}
-        >
-          <span>Day 1</span>
-          <span style={{ color: "var(--green)" }}>🟢 Lowest</span>
-          <span style={{ color: "var(--red)" }}>🔴 Peak</span>
-          <span>Day 30</span>
-        </div>
+        <div className="bars-labels"><span>Day 1</span><span>Day 30</span></div>
       </div>
-
-      <div className="card">
-        <h3 style={{ marginBottom: "1rem" }}>📋 Day-by-Day Log</h3>
+      <div className="card anim-up d3">
+        <div className="card-head"><h3>Day-by-Day Log</h3></div>
         <div style={{ overflowX: "auto" }}>
           <table className="data-table">
-            <thead>
-              <tr>
-                <th>Day</th>
-                <th>Total kWh</th>
-                <th>Daily Cost</th>
-                <th>vs Average</th>
-                <th>Bar</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.dailyTotals.map((v, i) => {
-                const diff  = v - data.dailyAvg;
-                const color = diff > 0 ? "var(--red)" : "var(--green)";
-                return (
-                  <tr key={i} style={v === max ? { background:"rgba(239,68,68,0.05)" } : v === min ? { background:"rgba(16,185,129,0.05)" } : {}}>
-                    <td className="mono" style={{ color: "var(--text-muted)" }}>Day {i + 1}</td>
-                    <td className="mono">{fmt(v, 4)}</td>
-                    <td className="mono">{inr(v * RATE_PER_KWH)}</td>
-                    <td className="mono" style={{ color }}>
-                      {diff > 0 ? "+" : ""}{fmt(diff, 4)}
-                    </td>
-                    <td style={{ width: "100px" }}>
-                      <div className="progress-bar">
-                        <div
-                          className="progress-fill"
-                          style={{ width: `${pct(v, max)}%`, background: barColor(pct(v, max)) }}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
+            <thead><tr><th>Day</th><th>kWh</th><th>Cost</th><th>vs Avg</th><th style={{width:90}}>Bar</th></tr></thead>
+            <tbody>{data.dailyTotals.map((v, i) => {
+              const diff = v - data.dailyAvg;
+              return (
+                <tr key={i} style={v === max ? { fontWeight: 700 } : v === min ? { color: "var(--gray-400)" } : {}}>
+                  <td className="mono" style={{ color: "var(--gray-500)" }}>Day {i + 1}</td>
+                  <td className="mono">{fmt(v, 4)}</td>
+                  <td className="mono">{inr(v * RATE_PER_KWH)}</td>
+                  <td className="mono" style={{ fontWeight: 600 }}>{diff > 0 ? "+" : ""}{fmt(diff, 4)}</td>
+                  <td><div className="appliance-bar-track"><div className="appliance-bar-fill" style={{ width: `${pct(v, max)}%` }}/></div></td>
+                </tr>
+              );
+            })}</tbody>
           </table>
         </div>
       </div>
@@ -544,92 +362,39 @@ function DailyStats({ data }: { data: ReturnType<typeof generateAuditData> }) {
   );
 }
 
-// ─── Root page ─────────────────────────────────────────────
+/* ═══ ROOT ═══ */
 export default function Home() {
   const data = useMemo(() => generateAuditData(), []);
-  const [activeTab, setActiveTab] = useState("overview");
-
-  const maxKwh = Math.max(...data.appliances.map((a) => a.monthlyTotal));
+  const [tab, setTab] = useState("overview");
+  const [sideOpen, setSideOpen] = useState(false);
+  const titles: Record<string, string> = { overview: "Dashboard", ranking: "Energy Usage", recommend: "Audits", search: "Search", daily: "Analytics" };
 
   return (
-    <>
-      <NavBar activeTab={activeTab} setActiveTab={setActiveTab} />
-
-      {/* Mobile tab bar */}
-      <div
-        style={{
-          display: "flex",
-          overflowX: "auto",
-          gap: "0.4rem",
-          padding: "0.75rem 1rem",
-          borderBottom: "1px solid var(--border)",
-          background: "var(--bg-card)",
-        }}
-        className="mobile-tabs"
-      >
-        {["overview","ranking","recommend","search","daily"].map((t) => (
-          <button
-            key={t}
-            id={`mob-nav-${t}`}
-            className={`btn btn-ghost ${activeTab === t ? "active" : ""}`}
-            style={{ fontSize: "0.78rem", whiteSpace: "nowrap" }}
-            onClick={() => setActiveTab(t)}
-          >
-            {{
-              overview:"📋 Overview",
-              ranking:"🏆 Rankings",
-              recommend:"⚠ Recommend",
-              search:"🔍 Search",
-              daily:"📊 Daily",
-            }[t]}
-          </button>
-        ))}
+    <div className="app">
+      <Sidebar active={tab} setActive={setTab} open={sideOpen} close={() => setSideOpen(false)}/>
+      <div className="main">
+        <header className="topbar">
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <button className="hamburger" onClick={() => setSideOpen(true)}>&#9776;</button>
+            <span className="topbar-title">{titles[tab]}</span>
+          </div>
+          <div className="topbar-right">
+            <span className="topbar-meta">PLDP 2025-26</span>
+            <div className="topbar-avatar">ZK</div>
+          </div>
+        </header>
+        <div className="page">
+          <Stats data={data}/>
+          <div key={tab}>
+            {tab === "overview" && <OverviewTab data={data}/>}
+            {tab === "ranking" && <RankingTab sorted={data.sortedByConsumption}/>}
+            {tab === "recommend" && <RecommendTab data={data}/>}
+            {tab === "search" && <SearchTab appliances={data.appliances}/>}
+            {tab === "daily" && <DailyTab data={data}/>}
+          </div>
+        </div>
+        <footer className="footer" />
       </div>
-
-      <main className="container">
-        <Hero
-          totalKwh={data.totalMonthlyKwh}
-          totalCost={data.totalMonthlyCost}
-          rate={RATE_PER_KWH}
-        />
-
-        <StatsGrid data={data} />
-
-        <div className="section">
-          {activeTab === "overview"  && (
-            <OverviewTable appliances={data.appliances} maxKwh={maxKwh} />
-          )}
-          {activeTab === "ranking"   && (
-            <RankingView sorted={data.sortedByConsumption} />
-          )}
-          {activeTab === "recommend" && (
-            <RecommendationsView
-              candidates={data.replacementCandidates}
-              threshold={data.percentileThreshold}
-              potentialSaving={data.potentialSaving}
-              all={data.appliances}
-            />
-          )}
-          {activeTab === "search"    && (
-            <SearchView appliances={data.appliances} />
-          )}
-          {activeTab === "daily"     && (
-            <DailyStats data={data} />
-          )}
-        </div>
-      </main>
-
-      <footer className="footer">
-        <div className="container">
-          <p>
-            EnergyAudit · Project 110 · Div C Group 63 ·
-            Python for Logic Development & Programming · 2025-26
-          </p>
-          <p style={{ marginTop: "0.3rem" }}>
-            Khan Zaid · Omkar Mhaske · Tanvi Bajrang Waghmare
-          </p>
-        </div>
-      </footer>
-    </>
+    </div>
   );
 }
